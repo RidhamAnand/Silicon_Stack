@@ -1,0 +1,2 @@
+test_query_1
+exit

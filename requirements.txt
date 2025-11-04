@@ -1,0 +1,31 @@
+# LLM & AI
+openai>=1.0.0  # Grok API uses OpenAI-compatible interface
+sentence-transformers>=2.2.2
+langchain>=0.1.0
+langgraph>=0.0.20
+langchain-community>=0.0.20
+
+# Vector Database
+pinecone>=3.0.0
+
+# Database
+pymongo>=4.6.0
+dnspython>=2.4.2  # For MongoDB Atlas
+
+# Web Framework
+flask>=3.0.0
+flask-cors>=4.0.0
+
+# MCP
+mcp>=0.1.0
+
+# Utilities
+python-dotenv>=1.0.0
+pydantic>=2.0.0
+numpy>=1.24.0
+pandas>=2.0.0
+requests>=2.31.0
+
+# Logging & Monitoring
+colorama>=0.4.6
+tqdm>=4.65.0
