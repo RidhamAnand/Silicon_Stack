@@ -185,10 +185,15 @@ CONVERSATION:
 {full_conversation}
 
 Please extract:
-1. REASON: What is the customer's main issue/complaint? (brief summary)
+1. REASON: What is the customer's main issue/complaint? (brief, specific summary)
 2. EMAIL: Customer's email address (if mentioned)
 3. ORDER_NUMBER: Order/transaction number (if mentioned)
 4. ISSUE_CATEGORY: What type of issue? (product_defect, order_problem, billing_issue, etc.)
+5. PRIORITY: Urgent/High/Medium/Low based on the severity implied by the customer's language. Use only content cues, do not assume.
+6. TIMESTAMP: Use the current UTC timestamp provided by the system below.
+
+SYSTEM TIMESTAMP (UTC):
+{datetime.utcnow().isoformat()}Z
 
 IMPORTANT:
 - For email, look for patterns like: name@domain.com
@@ -201,6 +206,8 @@ REASON: [extracted reason]
 EMAIL: [email or NOT_FOUND]
 ORDER_NUMBER: [order number or NOT_FOUND]
 ISSUE_CATEGORY: [category]
+PRIORITY: [Urgent/High/Medium/Low]
+TIMESTAMP: [UTC timestamp]
 """
         
         try:
@@ -242,6 +249,8 @@ ISSUE_CATEGORY: [category]
                 "email": None,
                 "order_number": None,
                 "issue_category": None,
+                "priority": None,
+                "timestamp": context_analysis.get("analysis_timestamp"),
                 "missing_fields": [],
                 "llm_extraction": llm_text
             }
@@ -264,6 +273,14 @@ ISSUE_CATEGORY: [category]
                     category = line.replace('ISSUE_CATEGORY:', '').strip()
                     if category:
                         extracted["issue_category"] = category
+                elif line.startswith('PRIORITY:'):
+                    pr = line.replace('PRIORITY:', '').strip().lower()
+                    if pr in {"urgent", "high", "medium", "low"}:
+                        extracted["priority"] = pr
+                elif line.startswith('TIMESTAMP:'):
+                    ts = line.replace('TIMESTAMP:', '').strip()
+                    if ts:
+                        extracted["timestamp"] = ts
             
             # Fallback to regex extraction if LLM didn't find these
             if not extracted["email"]:
@@ -291,8 +308,9 @@ ISSUE_CATEGORY: [category]
             if not extracted["reason"]:
                 extracted["missing_fields"].append("reason")
             
-            # Priority from context analysis
-            extracted["priority"] = context_analysis.get("priority_level", "medium")
+            # If LLM didn't assign a priority, fallback to contextual heuristics
+            if not extracted.get("priority"):
+                extracted["priority"] = context_analysis.get("priority_level", "medium")
             
             return extracted
             
@@ -531,8 +549,10 @@ Issue Category: {details.get('issue_category', 'N/A')}
         else:
             description += "• No specific escalation keywords detected\n"
         
-        # Add conversation context
+        # Add LLM priority and conversation context
         description += f"""
+Assigned Priority (LLM): {(details.get('priority') or 'medium').upper()}
+
 === CONVERSATION CONTEXT ===
 Total Messages Analyzed: {context_analysis.get('total_messages', 'N/A')}
 Conversation Summary:
@@ -703,9 +723,10 @@ If you don't have one, just type "no order" and I'll proceed without it."""
             context.collect_detail("order_number", order_matches[0])
         
         # Reason - check if current query looks like a complaint/issue description
-        complaint_keywords = ["defective", "broken", "damaged", "wrong", "issue", "problem", 
+        complaint_keywords = ["defective", "broken", "damaged", "wrong", "problem", 
                              "complaint", "not working", "doesn't work", "poor", "bad"]
-        if any(kw in user_query.lower() for kw in complaint_keywords) and not details["reason"]:
+        synthetic_handoff = ("ticket" in user_query.lower() and ("create" in user_query.lower() or "open" in user_query.lower()))
+        if (not synthetic_handoff) and any(kw in user_query.lower() for kw in complaint_keywords) and not details["reason"]:
             details["reason"] = user_query
             context.collect_detail("issue", user_query)
             context.collect_detail("reason", user_query)
@@ -738,6 +759,31 @@ If you don't have one, just type "no order" and I'll proceed without it."""
                         context.collect_detail("issue", msg_content)
                         context.collect_detail("reason", msg_content)
         
+        # Run LLM extraction over the full conversation to fill details and assign priority
+        try:
+            context_analysis = self._analyze_context(chat_history, user_query)
+            llm_details = self._extract_details_with_llm(context_analysis)
+            if not details.get("reason") and llm_details.get("reason"):
+                details["reason"] = llm_details["reason"]
+                context.collect_detail("issue", details["reason"])
+                context.collect_detail("reason", details["reason"])
+            if not details.get("email") and llm_details.get("email"):
+                details["email"] = llm_details["email"]
+                context.collect_detail("email", details["email"])
+            if not details.get("order_number") and llm_details.get("order_number"):
+                details["order_number"] = llm_details["order_number"]
+                context.collect_detail("order_number", details["order_number"])
+            if llm_details.get("priority"):
+                # Always prefer LLM priority
+                context.collect_detail("priority", llm_details["priority"])
+            # Store merged priority in details for downstream
+            details["priority"] = context.get_collected_detail("priority") or llm_details.get("priority") or context_analysis.get("priority_level", "medium")
+            if llm_details.get("issue_category"):
+                context.collect_detail("issue_category", llm_details["issue_category"])
+        except Exception:
+            # Best-effort; ignore LLM errors here
+            details["priority"] = context.get_collected_detail("priority") or details.get("priority")
+
         return details
     
     def _create_ticket_with_details(
@@ -749,10 +795,10 @@ If you don't have one, just type "no order" and I'll proceed without it."""
         chat_history: List[Dict]
     ) -> str:
         """Create ticket with all collected details"""
-        # Analyze context for priority
+        # Analyze context (keywords/timestamp); prefer LLM-assigned priority stored in context
         context_analysis = self._analyze_context(chat_history, reason)
-        priority = context_analysis.get("priority_level", "medium")
-        
+        priority = (context.get_collected_detail("priority") or context_analysis.get("priority_level", "medium")).lower()
+
         # Build details dict for ticket creation
         details = {
             "reason": reason,
@@ -762,7 +808,7 @@ If you don't have one, just type "no order" and I'll proceed without it."""
             "keywords": context_analysis.get("escalation_keywords", {}),
             "missing_fields": []
         }
-        
+
         # Create the ticket
         result = self._create_escalation_ticket(details, context_analysis)
         
@@ -774,14 +820,29 @@ If you don't have one, just type "no order" and I'll proceed without it."""
             ticket_id = result["ticket_id"]
             priority_level = result.get("priority", "MEDIUM").upper()
             
+            # Build extracted parameters summary
+            extracted_summary_lines = [
+                f"Reason: {reason[:300]}",
+                f"Email: {email}"
+            ]
+            if order_number:
+                extracted_summary_lines.append(f"Order: {order_number}")
+            keywords = details.get("keywords") or {}
+            if keywords:
+                # Flatten keyword categories for readability
+                flat_keywords = ", ".join(sorted({term for terms in keywords.values() for term in terms}))
+                if flat_keywords:
+                    extracted_summary_lines.append(f"Keywords: {flat_keywords}")
+
+            extracted_block = "\n".join(extracted_summary_lines)
+
             response = f"""✅ SUPPORT TICKET CREATED SUCCESSFULLY!
 
 Ticket ID: {ticket_id}
 Priority: {priority_level}
-Email: {email}"""
-            
-            if order_number:
-                response += f"\nOrder: {order_number}"
+
+Extracted Details:
+{extracted_block}"""
             
             response += f"""
 
@@ -929,14 +990,26 @@ If you don't have an order number, you can type "no order number" and we'll proc
             ticket_id = result["ticket_id"]
             priority_level = result.get("priority", "MEDIUM").upper()
             
+            # Build extracted parameters summary
+            extracted_summary_lines = [
+                f"Reason: {issue[:300]}",
+                f"Email: {email}"
+            ]
+            if order_number:
+                extracted_summary_lines.append(f"Order: {order_number}")
+            if keywords:
+                flat_keywords = ", ".join(sorted({term for terms in keywords.values() for term in terms})) if isinstance(keywords, dict) else ""
+                if flat_keywords:
+                    extracted_summary_lines.append(f"Keywords: {flat_keywords}")
+            extracted_block = "\n".join(extracted_summary_lines)
+
             response = f"""✅ **SUPPORT TICKET CREATED SUCCESSFULLY!**
 
 Ticket ID: {ticket_id}
 Priority: {priority_level}
-Email: {email}"""
-            
-            if order_number:
-                response += f"\nOrder: {order_number}"
+
+Extracted Details:
+{extracted_block}"""
             
             response += f"""
 
@@ -1030,13 +1103,28 @@ Your ticket has been submitted to our support team. A representative will contac
             ticket_id = result["ticket_id"]
             priority = result.get("priority", "HIGH").upper()
             
+            # Summarize extracted details
+            extracted_lines = [
+                f"Reason: {extracted_details.get('reason', 'N/A')[:300]}",
+                f"Email: {email}"
+            ]
+            if extracted_details.get("order_number"):
+                extracted_lines.append(f"Order: {extracted_details['order_number']}")
+            if extracted_details.get("issue_category"):
+                extracted_lines.append(f"Category: {extracted_details['issue_category']}")
+            kw = extracted_details.get("missing_fields")
+            # don't show missing fields if ticket created successfully
+            extracted_block = "\n".join(extracted_lines)
+
             return f"""ESCALATION - SUPPORT TICKET CREATED
 
 Thank you! I've created a support ticket for your issue.
 
 Ticket ID: {ticket_id}
 Priority: {priority}
-Email: {email}
+
+Extracted Details:
+{extracted_block}
 
 Your ticket has been submitted to our support team. A representative will contact you at {email}.
 

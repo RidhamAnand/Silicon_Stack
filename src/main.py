@@ -215,7 +215,7 @@ class CustomerSupportCLI:
 
                         escalation_reply = escalation_agent.process_message(
                             conversation_context=self.conversation,
-                            user_query="Please create a support ticket for this issue.",
+                            user_query=query,
                             chat_history=None
                         )
 

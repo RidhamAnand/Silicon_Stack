@@ -581,6 +581,30 @@ class IntentRouter:
         Returns:
             Dictionary with response and metadata
         """
+        # Normalize conversation context to a list[dict] if a ConversationContext object was provided
+        normalized_history: List[Dict] = []
+        try:
+            if conversation_context is None:
+                normalized_history = []
+            elif hasattr(conversation_context, 'messages'):
+                # It's a ConversationContext object; convert to a simple list of dicts
+                normalized_history = []
+                for m in conversation_context.messages:
+                    normalized_history.append({
+                        "role": getattr(m, 'role', 'user'),
+                        "content": getattr(m, 'content', ''),
+                        "intent": getattr(m, 'intent', None),
+                        "entities": getattr(m, 'entities', []),
+                        "metadata": getattr(m, 'metadata', {})
+                    })
+            elif isinstance(conversation_context, list):
+                normalized_history = conversation_context
+            else:
+                # Unknown type; best-effort: wrap into list if it looks like a message dict
+                normalized_history = conversation_context  # type: ignore
+        except Exception:
+            normalized_history = []
+
         # Initialize state
         initial_state = ConversationState(
             query=query,
@@ -588,7 +612,7 @@ class IntentRouter:
             intent_confidence=0.0,
             entities=[],
             context={
-                "conversation_history": conversation_context or []
+                "conversation_history": normalized_history or []
             },
             response="",
             needs_escalation=False,
