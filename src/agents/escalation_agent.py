@@ -7,6 +7,7 @@ Unified Escalation Agent - Handles all escalation and ticket creation flows
 """
 from typing import Dict, List, Any, Optional, Tuple
 from src.tickets.ticket_manager import ticket_manager, TicketPriority, TicketStatus
+from src.database.mongodb_client import mongodb_client
 import re
 import os
 import json
@@ -490,6 +491,23 @@ TIMESTAMP: [UTC timestamp]
                 order_number=details.get("order_number"),
                 priority=priority
             )
+            # Ensure ticket persisted in MongoDB (safeguard/upsert) when DB is connected.
+            try:
+                if mongodb_client.is_connected():
+                    tickets_col = mongodb_client.get_collection("tickets")
+                    doc = ticket.to_dict()
+                    # Upsert the ticket document so agent persistence is explicit
+                    tickets_col.replace_one({"ticket_id": ticket.ticket_id}, doc, upsert=True)
+                    # Refresh DB id if available
+                    saved = tickets_col.find_one({"ticket_id": ticket.ticket_id})
+                    if saved and saved.get("_id"):
+                        try:
+                            ticket.db_id = str(saved.get("_id"))
+                        except Exception:
+                            ticket.db_id = None
+            except Exception as e:
+                # Don't fail ticket creation if DB persistence fails; log for visibility
+                print(f"[Escalation] Warning: failed to persist ticket to DB: {e}")
             
             return {
                 "success": True,
