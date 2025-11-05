@@ -4,6 +4,8 @@ Handles support ticket creation, tracking, and status updates
 """
 import uuid
 from datetime import datetime
+from typing import Any
+from src.database.mongodb_client import mongodb_client
 from typing import Dict, List, Optional
 from enum import Enum
 
@@ -46,8 +48,9 @@ class Ticket:
     
     def add_note(self, note: str):
         """Add a note to the ticket"""
+        # Store timestamp as ISO string so the ticket is JSON-serializable for DB storage
         self.notes.append({
-            "timestamp": datetime.now(),
+            "timestamp": datetime.now().isoformat(),
             "note": note
         })
         self.updated_at = datetime.now()
@@ -99,13 +102,29 @@ class TicketManager:
             priority=priority
         )
         
-        # Store ticket
+        # Store ticket in memory
         self.all_tickets[ticket.ticket_id] = ticket
-        
+
         if user_email not in self.tickets_by_user:
             self.tickets_by_user[user_email] = []
         self.tickets_by_user[user_email].append(ticket)
-        
+
+        # Persist to MongoDB if available
+        try:
+            if mongodb_client.is_connected():
+                tickets_col = mongodb_client.get_collection("tickets")
+                doc = ticket.to_dict()
+                # Insert document
+                result = tickets_col.insert_one(doc)
+                # Save DB _id string on ticket for reference
+                try:
+                    ticket.db_id = str(result.inserted_id)
+                except Exception:
+                    ticket.db_id = None
+        except Exception:
+            # Fail silently and keep in-memory store operational
+            pass
+
         return ticket
     
     def get_ticket(self, ticket_id: str) -> Optional[Ticket]:
@@ -135,6 +154,27 @@ class TicketManager:
         ticket = self.get_ticket(ticket_id)
         if ticket:
             ticket.update_status(new_status, note)
+            # Persist status update to DB if connected
+            try:
+                if mongodb_client.is_connected():
+                    tickets_col = mongodb_client.get_collection("tickets")
+                    update_data = {
+                        "status": ticket.status.value,
+                        "updated_at": ticket.updated_at.isoformat()
+                    }
+                    if note:
+                        # Also push the note into notes array
+                        tickets_col.update_one(
+                            {"ticket_id": ticket_id},
+                            {
+                                "$set": update_data,
+                                "$push": {"notes": {"timestamp": datetime.now().isoformat(), "note": note}}
+                            }
+                        )
+                    else:
+                        tickets_col.update_one({"ticket_id": ticket_id}, {"$set": update_data})
+            except Exception:
+                pass
             return True
         return False
     
@@ -143,6 +183,17 @@ class TicketManager:
         ticket = self.get_ticket(ticket_id)
         if ticket:
             ticket.add_note(note)
+            # Persist note to DB if connected
+            try:
+                if mongodb_client.is_connected():
+                    tickets_col = mongodb_client.get_collection("tickets")
+                    tickets_col.update_one(
+                        {"ticket_id": ticket_id},
+                        {"$push": {"notes": {"timestamp": datetime.now().isoformat(), "note": note}},
+                         "$set": {"updated_at": ticket.updated_at.isoformat()}}
+                    )
+            except Exception:
+                pass
             return True
         return False
     
