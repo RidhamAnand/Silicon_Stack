@@ -248,7 +248,7 @@ class IntentRouter:
         """Generate the final response based on routing context"""
         # Import here to avoid circular import
         from src.agents.base_agent import available_agents
-        from src.agents.order_return_agent import order_return_agent
+        from src.agents.order_queries_handler_agent import order_return_agent
 
         context = state["context"]
         agent_selection_details = {
