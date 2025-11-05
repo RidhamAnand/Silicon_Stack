@@ -380,13 +380,21 @@ class IntentRouter:
             # For complaints, use escalation agent to analyze context and create ticket
             from src.agents.escalation_agent import escalation_agent
             
+            # Get the actual ConversationContext object if available
+            conversation_context_obj = context.get("conversation_context_obj")
             chat_history = state["context"].get("conversation_history", [])
+            
+            # Pass the actual object so escalation agent can modify state
             response = escalation_agent.process_message(
-                conversation_context=chat_history,
+                conversation_context=conversation_context_obj if conversation_context_obj else chat_history,
                 user_query=state["query"],
-                chat_history=chat_history
+                chat_history=None  # Agent will extract from conversation_context
             )
             state["routing_path"].append("escalation_agent")
+            
+            # If we have the object, mark that escalation is active
+            if conversation_context_obj:
+                print(f"[IntentRouter] Escalation agent activated, current_agent = '{conversation_context_obj.current_agent}'")
 
         elif handler == "account":
             response = self._generate_account_response()
@@ -398,13 +406,21 @@ class IntentRouter:
             # For escalations, use escalation agent to analyze context and create ticket
             from src.agents.escalation_agent import escalation_agent
             
+            # Get the actual ConversationContext object if available
+            conversation_context_obj = context.get("conversation_context_obj")
             chat_history = state["context"].get("conversation_history", [])
+            
+            # Pass the actual object so escalation agent can modify state
             response = escalation_agent.process_message(
-                conversation_context=chat_history,
+                conversation_context=conversation_context_obj if conversation_context_obj else chat_history,
                 user_query=state["query"],
-                chat_history=chat_history
+                chat_history=None  # Agent will extract from conversation_context
             )
             state["routing_path"].append("escalation_agent")
+            
+            # If we have the object, mark that escalation is active
+            if conversation_context_obj:
+                print(f"[IntentRouter] Escalation agent activated, current_agent = '{conversation_context_obj.current_agent}'")
 
         elif handler == "general":
             response = self._generate_general_response()
@@ -583,11 +599,15 @@ class IntentRouter:
         """
         # Normalize conversation context to a list[dict] if a ConversationContext object was provided
         normalized_history: List[Dict] = []
+        conversation_context_obj = None  # Store the actual object reference
+        
         try:
             if conversation_context is None:
                 normalized_history = []
             elif hasattr(conversation_context, 'messages'):
-                # It's a ConversationContext object; convert to a simple list of dicts
+                # It's a ConversationContext object; keep the reference!
+                conversation_context_obj = conversation_context
+                # Also convert to a simple list of dicts for backward compatibility
                 normalized_history = []
                 for m in conversation_context.messages:
                     normalized_history.append({
@@ -612,7 +632,8 @@ class IntentRouter:
             intent_confidence=0.0,
             entities=[],
             context={
-                "conversation_history": normalized_history or []
+                "conversation_history": normalized_history or [],
+                "conversation_context_obj": conversation_context_obj  # Pass the actual object!
             },
             response="",
             needs_escalation=False,

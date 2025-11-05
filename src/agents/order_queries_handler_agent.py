@@ -117,7 +117,15 @@ class OrderReturnAgent:
 
         # Try to look up the order
         try:
+            # Debug: Check database connection status
+            print(f"[OrderAgent] Looking up order: {order_number}")
+            print(f"[OrderAgent] DB connected: {db_service.is_connected()}")
+            
             result = db_service.lookup_order(order_number)
+            
+            print(f"[OrderAgent] Lookup result found: {result.found}")
+            print(f"[OrderAgent] Lookup message: {result.message}")
+            
             if result.found:
                 order = result.order
                 if order.status.value in ['delivered', 'shipped']:
@@ -126,7 +134,8 @@ class OrderReturnAgent:
                     return f"I see your order {order_number} is currently {order.status.value}. Returns are typically available once the order has been delivered. Would you like me to help with something else regarding this order?"
             else:
                 return f"I couldn't find an order with number {order_number}. Please double-check your order number or provide the email address used for the purchase."
-        except:
+        except Exception as e:
+            print(f"[OrderAgent] Exception during lookup: {e}")
             return f"I found your order number {order_number}. To process your return, could you please tell me why you're returning the item?"
 
     def _handle_reason_provided(self, reason: str, order_number: str) -> str:

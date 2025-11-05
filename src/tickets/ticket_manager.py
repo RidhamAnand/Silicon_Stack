@@ -39,12 +39,57 @@ class Ticket:
         self.title = title
         self.description = description
         self.user_email = user_email
-        self.order_number = order_number
+        # Clean order number - store None if it's a default message or "no order"
+        self.order_number = self._clean_order_number(order_number)
         self.priority = priority
         self.status = TicketStatus.OPEN
         self.created_at = datetime.now()
         self.updated_at = datetime.now()
         self.notes: List[str] = []
+    
+    def _clean_order_number(self, order_number: Optional[str]) -> Optional[str]:
+        """
+        Clean order number for storage
+        - If None or empty, return None
+        - If contains default messages like "no order", "N/A", etc., return None
+        - If it's the default example "ORD-1234-5678", return None
+        - Otherwise return the order number as-is
+        """
+        if not order_number:
+            return None
+        
+        order_str = str(order_number).strip()
+        
+        # Check if it's the default example order number
+        if order_str.upper() == 'ORD-1234-5678':
+            return None
+        
+        order_lower = order_str.lower()
+        
+        # Default messages to treat as "no order"
+        no_order_phrases = [
+            'no order',
+            'n/a',
+            'not_found',
+            'not found',
+            'none',
+            'no related order',
+            'no order number'
+        ]
+        
+        if order_lower in no_order_phrases:
+            return None
+        
+        return order_number
+    
+    def get_display_order_number(self) -> str:
+        """
+        Get order number for display purposes
+        Returns "No related order" if order_number is None
+        """
+        if self.order_number is None:
+            return "No related order"
+        return self.order_number
     
     def add_note(self, note: str):
         """Add a note to the ticket"""
@@ -69,7 +114,8 @@ class Ticket:
             "title": self.title,
             "description": self.description,
             "user_email": self.user_email,
-            "order_number": self.order_number,
+            "order_number": self.order_number,  # Store as None in DB if no order
+            "order_number_display": self.get_display_order_number(),  # For frontend display
             "priority": self.priority.value,
             "status": self.status.value,
             "created_at": self.created_at.isoformat(),
@@ -213,7 +259,7 @@ class TicketManager:
                     "status": t.status.value,
                     "priority": t.priority.value,
                     "created_at": t.created_at.isoformat(),
-                    "order_number": t.order_number
+                    "order_number": t.get_display_order_number()  # Use display version
                 }
                 for t in user_tickets
             ]

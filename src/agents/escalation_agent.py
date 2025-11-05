@@ -67,6 +67,10 @@ class EscalationAgent:
         
         # Step 4: If still missing critical fields after collection attempt, return special response
         if not verified_details.get("email"):
+            # Get the actual user's complaint from the last user message
+            user_messages = context_analysis.get("user_messages", [])
+            user_complaint = user_query if user_query else (user_messages[-1] if user_messages else "your issue")
+            
             # Return a response asking for email - the router will show this to user
             return {
                 "success": False,
@@ -74,6 +78,7 @@ class EscalationAgent:
                 "ticket_id": None,
                 "needs_email": True,
                 "reason": verified_details.get("reason"),
+                "user_complaint": user_complaint,  # Add the actual user's words
                 "order_number": verified_details.get("order_number")
             }
         
@@ -553,7 +558,7 @@ ESCALATION TICKET - CREATED {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')
 
 === CONTACT INFORMATION ===
 Email: {details.get('email', 'N/A')}
-Order Number: {details.get('order_number', 'N/A')}
+Order Number: {details.get('order_number') or 'No related order'}
 Issue Category: {details.get('issue_category', 'N/A')}
 
 === PRIORITY INDICATORS ===
@@ -678,6 +683,22 @@ What's your email address?"""
             return response
         
         if not order_number:
+            # Check if we're waiting for order and user just said "no order"
+            if context.pending_action == "waiting_for_order_optional":
+                user_query_lower = user_query.lower().strip()
+                no_order_phrases = ['no order', 'no order number', 'dont have order', "don't have order", 
+                                   'no order id', 'without order', 'skip order']
+                
+                if any(phrase in user_query_lower for phrase in no_order_phrases):
+                    # User confirmed they don't have an order - proceed without it
+                    return self._create_ticket_with_details(
+                        context=context,
+                        reason=reason,
+                        email=email,
+                        order_number=None,  # Explicitly pass None
+                        chat_history=chat_history
+                    )
+            
             # Have reason and email, but no order - ask if they have one
             context.set_pending_action("waiting_for_order_optional")
             
@@ -728,17 +749,31 @@ If you don't have one, just type "no order" and I'll proceed without it."""
             details["order_number"] = context.get_collected_detail("order_number")
         
         # Extract from current query
+        # Check if user is saying "no order" to clear any previously collected order
+        user_query_lower = user_query.lower().strip()
+        no_order_phrases = ['no order', 'no order number', 'dont have order', "don't have order", 
+                           'no order id', 'without order', 'skip order']
+        if any(phrase in user_query_lower for phrase in no_order_phrases):
+            # User explicitly said they don't have an order - clear it
+            details["order_number"] = None
+            context.collect_detail("order_number", None)
+            # If we're in waiting_for_order_optional state, proceed to ticket creation
+            if context.pending_action == "waiting_for_order_optional":
+                # This will be handled by the parent logic - just ensure order_number is None
+                pass
+        
         # Email pattern
         email_matches = re.findall(self.email_pattern, user_query)
         if email_matches and not details["email"]:
             details["email"] = email_matches[0]
             context.collect_detail("email", email_matches[0])
         
-        # Order pattern
-        order_matches = re.findall(self.order_pattern, user_query, re.IGNORECASE)
-        if order_matches and not details["order_number"]:
-            details["order_number"] = order_matches[0]
-            context.collect_detail("order_number", order_matches[0])
+        # Order pattern - only extract if user didn't say "no order"
+        if not any(phrase in user_query_lower for phrase in no_order_phrases):
+            order_matches = re.findall(self.order_pattern, user_query, re.IGNORECASE)
+            if order_matches and not details["order_number"]:
+                details["order_number"] = order_matches[0]
+                context.collect_detail("order_number", order_matches[0])
         
         # Reason - check if current query looks like a complaint/issue description
         complaint_keywords = ["defective", "broken", "damaged", "wrong", "problem", 
@@ -1070,13 +1105,17 @@ Your ticket has been submitted to our support team. A representative will contac
 **You can reference your Ticket ID for future inquiries.**
 """
         elif result.get("needs_email"):
-            msg = f"""I found the issue you reported:
-  {result.get('reason', 'N/A')[:100]}
+            # Show the actual user complaint, not the LLM-extracted summary
+            user_complaint = result.get('user_complaint', result.get('reason', 'your issue'))
+            
+            msg = f"""I understand you're experiencing an issue with your order.
+
+Issue: {user_complaint}
 """
             if result.get('order_number'):
-                msg += f"  Order: {result.get('order_number')}\n"
+                msg += f"Order: {result.get('order_number')}\n"
             
-            msg += "\n📧 To create a support ticket, please reply with your email address."
+            msg += "\n📧 To create a support ticket, please provide your email address."
             return msg
         else:
             return f"Error creating escalation ticket: {result['message']}"
